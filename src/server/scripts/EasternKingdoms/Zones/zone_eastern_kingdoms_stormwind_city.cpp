@@ -658,6 +658,10 @@ enum {
     QUEST_BLINK_OF_AN_EYE = 44663,
     QUEST_THE_CALL_OF_WAR = 39691,
     QUEST_DEMONS_AMONG_THEM = 44463,
+    QUEST_THE_MISSION = 29548,
+    QUEST_UNLEASH_HELL = 31732,
+    QUEST_TOUCHING_GROUND = 31733,
+    MAP_THE_JADE_FOREST = 870,
     SCENE_DEMONS_AMONG_THEM = 1456,
     KILL_CREDIT_WARN_ANDUIN_WRYNN = 111585,
     SPELL_PHASE_175 = 57569,
@@ -750,6 +754,47 @@ public:
     }
 };
 
+class player_the_mission_skyfire_phasing : public PlayerScript
+{
+public:
+    player_the_mission_skyfire_phasing() : PlayerScript("player_the_mission_skyfire_phasing") { }
+
+    void OnQuestStatusChange(Player* player, uint32 questId) override
+    {
+        if (!IsSkyfireIntroQuest(questId))
+            return;
+
+        RefreshSkyfireVisibility(player);
+    }
+
+    void OnMapChanged(Player* player) override
+    {
+        if (player->GetMapId() != MAP_THE_JADE_FOREST || !IsInSkyfireIntroChain(player))
+            return;
+
+        PhasingHandler::OnMapChange(player);
+        RefreshSkyfireVisibility(player);
+    }
+
+private:
+    static bool IsSkyfireIntroQuest(uint32 questId)
+    {
+        return questId == QUEST_THE_MISSION || questId == QUEST_UNLEASH_HELL || questId == QUEST_TOUCHING_GROUND;
+    }
+
+    static bool IsInSkyfireIntroChain(Player* player)
+    {
+        return player->GetQuestStatus(QUEST_THE_MISSION) != QUEST_STATUS_NONE
+            && player->GetQuestStatus(QUEST_TOUCHING_GROUND) != QUEST_STATUS_REWARDED;
+    }
+
+    static void RefreshSkyfireVisibility(Player* player)
+    {
+        PhasingHandler::OnConditionChange(player);
+        player->UpdateObjectVisibility(true);
+    }
+};
+
 // Elerion Bladedancer <Illidari>
 class npc_elerion_bladedancer_101004 : public CreatureScript
 {
@@ -835,6 +880,7 @@ void AddSC_stormwind_city()
     new npc_anduin_wrynn();
     new scene_demons_among_them_alliance();
     new quest_demons_among_them();
+    new player_the_mission_skyfire_phasing();
     new npc_elerion_bladedancer_101004();
     new npc_khadgars_upgraded_servant_114562();
     new PlayerScript_phase_correction();
