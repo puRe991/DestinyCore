@@ -258,6 +258,24 @@ auto GroupFilterForSession = [](uint32 groupId) -> bool
 auto BattlepayManager::ProductFilter(Product product) -> bool
 {
     auto player = _session->GetPlayer();
+
+    for (auto const& itr : product.Items)
+    {
+        if (!itr.ItemID || !itr.Quantity)
+        {
+            TC_LOG_ERROR("server.battlepay", "BattlePay: Product %u has invalid product item data: ItemID=%u Quantity=%u",
+                product.ProductID, itr.ItemID, itr.Quantity);
+            return false;
+        }
+
+        if (!sObjectMgr->GetItemTemplate(itr.ItemID))
+        {
+            TC_LOG_ERROR("server.battlepay", "BattlePay: Product %u references missing item template %u",
+                product.ProductID, itr.ItemID);
+            return false;
+        }
+    }
+
     if (!player)
     {
         switch (product.WebsiteType)
