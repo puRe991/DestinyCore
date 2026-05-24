@@ -104,117 +104,171 @@ void BattlepayManager::ProcessDelivery(Purchase * purchase)
     auto const& productDisplay = sBattlePayDataStore->GetDisplayInfo(product.ProductID);
     switch (product.WebsiteType)
     {
-    case Battlepay::Item:
-    {
-        if (player)
+        case Battlepay::Item:
         {
-            for (auto const& itr : product.Items)
-                player->AddItem(itr.ItemID, itr.Quantity);
-        }
-        else if (!purchase->TargetCharacter.IsEmpty())
-        {
-            CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
-
-            MailDraft draft(productDisplay->Name1, "Your BattlePay purchase has been delivered.");
-
-            for (auto const& itr : product.Items)
+            if (player)
             {
-                if (!itr.ItemID || !itr.Quantity)
-                    continue;
+                for (auto const& itr : product.Items)
+                    player->AddItem(itr.ItemID, itr.Quantity);
+            }
+            else if (!purchase->TargetCharacter.IsEmpty())
+            {
+                CharacterDatabaseTransaction trans = CharacterDatabase.BeginTransaction();
 
-                if (!sObjectMgr->GetItemTemplate(itr.ItemID))
+                MailDraft draft(productDisplay->Name1, "Your BattlePay purchase has been delivered.");
+
+                for (auto const& itr : product.Items)
                 {
-                    TC_LOG_ERROR("server.battlepay", "BattlePay: Product %u contains invalid item %u", product.ProductID, itr.ItemID);
-                    continue;
+                    if (!itr.ItemID || !itr.Quantity)
+                        continue;
+
+                    if (!sObjectMgr->GetItemTemplate(itr.ItemID))
+                    {
+                        TC_LOG_ERROR("server.battlepay", "BattlePay: Product %u contains invalid item %u", product.ProductID, itr.ItemID);
+                        continue;
+                    }
+
+                    if (::Item* item = ::Item::CreateItem(itr.ItemID, itr.Quantity))
+                    {
+                        item->SaveToDB(trans);
+                        draft.AddItem(item);
+                    }
                 }
 
-                if (::Item* item = ::Item::CreateItem(itr.ItemID, itr.Quantity))
-                {
-                    item->SaveToDB(trans);
-                    draft.AddItem(item);
-                }
+                draft.SendMailTo(
+                    trans,
+                    MailReceiver(nullptr, purchase->TargetCharacter.GetCounter()),
+                    MailSender(MAIL_NORMAL, 0),
+                    MAIL_CHECK_MASK_COPIED
+                );
+
+                CharacterDatabase.CommitTransaction(trans);
             }
 
-            draft.SendMailTo(
-                trans,
-                MailReceiver(nullptr, purchase->TargetCharacter.GetCounter()),
-                MailSender(MAIL_NORMAL, 0),
-                MAIL_CHECK_MASK_COPIED
-            );
-
-            CharacterDatabase.CommitTransaction(trans);
+            break;
         }
-
-        break;
-    }
-    case Battlepay::Gold:
-        if (player)
-            player->ModifyMoney(product.CustomValue);
-        break;
-        /*case Battlepay::Currency:
+        case Battlepay::Gold:
             if (player)
-                player->ModifyCurrency(currencyID, product.CustomValue); // implement currencyID in DB
-            break;*/
-    case Battlepay::Level:
-    {
-        if (player)
+                player->ModifyMoney(product.CustomValue);
+            break;
+            /*case Battlepay::Currency:
+                if (player)
+                    player->ModifyCurrency(currencyID, product.CustomValue); // implement currencyID in DB
+                break;*/
+        case Battlepay::Level:
         {
-            player->SetLevel(product.CustomValue);
-            player->SendBattlePayMessage(1, productDisplay->Name1);
+            if (player)
+            {
+                player->SetLevel(product.CustomValue);
+                player->SendBattlePayMessage(1, productDisplay->Name1);
+            }
+            break;
         }
-        break;
-    }
-    case Battlepay::CharacterBoost:
-    {
-        if (!sWorld->getBoolConfig(CONFIG_CHARACTER_BOOST_ENABLED))
+        case Battlepay::CharacterBoost:
+        {
+            if (!sWorld->getBoolConfig(CONFIG_CHARACTER_BOOST_ENABLED))
+                break;
+
+            uint8 targetLevel = 0;
+            if (product.ScriptName.find("level90") != std::string::npos)
+                targetLevel = 90;
+            else if (product.ScriptName.find("level100") != std::string::npos)
+                targetLevel = 100;
+            else if (product.ScriptName.find("level110") != std::string::npos)
+                targetLevel = 110;
+            else if (product.CustomValue > 0 && product.CustomValue <= 255)
+                targetLevel = uint8(product.CustomValue);
+
+            if (!targetLevel)
+                break;
+
+            ObjectGuid targetGuid = purchase->TargetCharacter;
+            if (targetGuid.IsEmpty() && player)
+                targetGuid = player->GetGUID();
+
+            CharacterInfo const* charInfo = sWorld->GetCharacterInfo(targetGuid);
+            if (!charInfo || charInfo->Level >= targetLevel)
+                break;
+
+            sCharacterService->BoostCharacter(_session, targetGuid, targetLevel);
             break;
+        }
+        case Battlepay::BattlePet:
+            //if (player)
+            //    player->AddBattlePetByCreatureId(product.CustomValue, true, true);
+            //break;
+        case Battlepay::CharacterRename:
+        {
+            ObjectGuid targetGuid = purchase->TargetCharacter;
+            if (targetGuid.IsEmpty() && player)
+                targetGuid = player->GetGUID();
 
-        uint8 targetLevel = 0;
-        if (product.ScriptName.find("level90") != std::string::npos)
-            targetLevel = 90;
-        else if (product.ScriptName.find("level100") != std::string::npos)
-            targetLevel = 100;
-        else if (product.ScriptName.find("level110") != std::string::npos)
-            targetLevel = 110;
-        else if (product.CustomValue > 0 && product.CustomValue <= 255)
-            targetLevel = uint8(product.CustomValue);
+            if (targetGuid.IsEmpty())
+                break;
 
-        if (!targetLevel)
+            if (player && player->GetGUID() == targetGuid)
+                player->SetAtLoginFlag(AT_LOGIN_RENAME);
+
+            CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_UPD_ADD_AT_LOGIN_FLAG);
+            stmt->setUInt16(0, uint16(AT_LOGIN_RENAME));
+            stmt->setUInt64(1, targetGuid.GetCounter());
+            CharacterDatabase.Execute(stmt);
             break;
+        }
+        case Battlepay::CharacterFactionChange:
+        {
+            ObjectGuid targetGuid = purchase->TargetCharacter;
+            if (targetGuid.IsEmpty() && player)
+                targetGuid = player->GetGUID();
 
-        ObjectGuid targetGuid = purchase->TargetCharacter;
-        if (targetGuid.IsEmpty() && player)
-            targetGuid = player->GetGUID();
+            if (targetGuid.IsEmpty())
+                break;
 
-        CharacterInfo const* charInfo = sWorld->GetCharacterInfo(targetGuid);
-        if (!charInfo || charInfo->Level >= targetLevel)
+            if (player && player->GetGUID() == targetGuid)
+                player->SetAtLoginFlag(AT_LOGIN_CHANGE_FACTION);
+
+            CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_UPD_ADD_AT_LOGIN_FLAG);
+            stmt->setUInt16(0, uint16(AT_LOGIN_CHANGE_FACTION));
+            stmt->setUInt64(1, targetGuid.GetCounter());
+            CharacterDatabase.Execute(stmt);
             break;
+        }
+        case Battlepay::CharacterCustomization:
+        {
+            ObjectGuid targetGuid = purchase->TargetCharacter;
+            if (targetGuid.IsEmpty() && player)
+                targetGuid = player->GetGUID();
 
-        sCharacterService->BoostCharacter(_session, targetGuid, targetLevel);
-        break;
-    }
-    case Battlepay::BattlePet:
-        //if (player)
-        //    player->AddBattlePetByCreatureId(product.CustomValue, true, true);
-        //break;
-    case Battlepay::CharacterRename:
-        if (player)
-            player->SetAtLoginFlag(AT_LOGIN_RENAME);
-        break;
-    case Battlepay::CharacterFactionChange:
-        if (player)
-            player->SetAtLoginFlag(AT_LOGIN_CHANGE_FACTION);
-        break;
-    case Battlepay::CharacterCustomization:
-        if (player)
-            player->SetAtLoginFlag(AT_LOGIN_CUSTOMIZE);
-        break;
-    case Battlepay::CharacterRaceChange:
-        if (player)
-            player->SetAtLoginFlag(AT_LOGIN_CHANGE_RACE);
-        break;
-    default:
-        break;
+            if (targetGuid.IsEmpty())
+                break;
+
+            if (player && player->GetGUID() == targetGuid)
+                player->SetAtLoginFlag(AT_LOGIN_CUSTOMIZE);
+
+            CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_UPD_ADD_AT_LOGIN_FLAG);
+            stmt->setUInt16(0, uint16(AT_LOGIN_CUSTOMIZE));
+            stmt->setUInt64(1, targetGuid.GetCounter());
+            CharacterDatabase.Execute(stmt);
+            break;
+        }
+        case Battlepay::CharacterRaceChange:
+        {
+            ObjectGuid targetGuid = purchase->TargetCharacter;
+            if (targetGuid.IsEmpty() && player)
+                targetGuid = player->GetGUID();
+
+            if (targetGuid.IsEmpty())
+                break;
+
+            if (player && player->GetGUID() == targetGuid)
+                player->SetAtLoginFlag(AT_LOGIN_CHANGE_RACE);
+
+            CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_UPD_ADD_AT_LOGIN_FLAG);
+            stmt->setUInt16(0, uint16(AT_LOGIN_CHANGE_RACE));
+            stmt->setUInt64(1, targetGuid.GetCounter());
+            CharacterDatabase.Execute(stmt);
+            break;
+        }
     }
 }
 

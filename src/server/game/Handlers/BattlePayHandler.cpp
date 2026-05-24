@@ -19,6 +19,7 @@
 #include "BattlePayMgr.h"
 #include "BattlePayData.h"
 #include "Bag.h"
+#include "CharacterPackets.h"
 #include "ObjectMgr.h"
 #include "ScriptMgr.h"
 #include "DatabaseEnv.h"
@@ -266,11 +267,27 @@ void WorldSession::HandleBattlePayConfirmPurchase(WorldPackets::BattlePay::Confi
     GetBattlePayMgr()->SavePurchase(purchase);
     GetBattlePayMgr()->ProcessDelivery(purchase);
 
-    if (player)
+    if (!player)
     {
-        player->UpdateBattlePayCredits(purchase->CurrentPrice);
-        player->SendBattlePayMessage(1, displayInfo->Name1);
+        CharacterDatabasePreparedStatement* stmt = CharacterDatabase.GetPreparedStatement(CHAR_SEL_ENUM);
+        stmt->setUInt32(0, GetAccountId());
+
+        _queryProcessor.AddCallback(CharacterDatabase.AsyncQuery(stmt).WithPreparedCallback(
+            [this](PreparedQueryResult result)
+            {
+                HandleCharEnum(result);
+            }));
     }
+
+    uint64 newBalance = accountBalance - purchase->CurrentPrice;
+
+    LoginDatabasePreparedStatement* updStmt = LoginDatabase.GetPreparedStatement(LOGIN_UPD_BATTLE_PAY_ACCOUNT_CREDITS);
+    updStmt->setUInt64(0, newBalance);
+    updStmt->setUInt32(1, GetBattlenetAccountId());
+    LoginDatabase.Execute(updStmt);
+
+    if (player)
+        player->SendBattlePayMessage(1, displayInfo->Name1);
 
     GetBattlePayMgr()->SendAccountCredits();
     GetBattlePayMgr()->SendProductList();
